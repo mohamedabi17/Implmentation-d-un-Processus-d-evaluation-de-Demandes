@@ -1,0 +1,252 @@
+services:
+  # RabbitMQ - Message Broker
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: pret_rabbitmq
+    ports:
+      - "5672:5672" # Port AMQP
+      - "15672:15672" # Management UI
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    hostname: rabbitmq
+    volumes:
+      - ./rabbitmq-entrypoint.sh:/usr/local/bin/custom-entrypoint.sh:ro
+    entrypoint: [ "/usr/local/bin/custom-entrypoint.sh" ]
+    healthcheck:
+      test: [ "CMD", "rabbitmq-diagnostics", "-q", "ping" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    networks:
+      - pret_network
+
+  # Redis - Celery Result Backend
+  redis:
+    image: redis:7-alpine
+    container_name: pret_redis
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - pret_network
+
+  # PostgreSQL - Base de données
+  postgres:
+    image: postgres:15
+    container_name: pret_postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: pret_user
+      POSTGRES_PASSWORD: pret_password
+      POSTGRES_DB: pret_immobilier
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U pret_user" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - pret_network
+
+  # Service Demandes
+  service-demandes:
+    build:
+      context: .
+      dockerfile: services/demandes/Dockerfile
+    container_name: service_demandes
+    ports:
+      - "8001:8001"
+    environment:
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      RABBITMQ_USER: guest
+      RABBITMQ_PASSWORD: guest
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: pret_user
+      POSTGRES_PASSWORD: pret_password
+      POSTGRES_DB: pret_immobilier
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    networks:
+      - pret_network
+    restart: unless-stopped
+
+  # Service Crédit - API
+  service-credit:
+    build:
+      context: .
+      dockerfile: services/credit/Dockerfile
+    container_name: service_credit
+    ports:
+      - "8002:8002"
+    environment:
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      RABBITMQ_USER: guest
+      RABBITMQ_PASSWORD: guest
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_DB: 0
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - pret_network
+    restart: unless-stopped
+
+  # Service Crédit - Celery Worker
+  worker-credit:
+    build:
+      context: .
+      dockerfile: services/credit/Dockerfile
+    container_name: worker_credit
+    command: celery -A celery_app worker --loglevel=info --concurrency=2 -Q credit_evaluation_queue
+    environment:
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      RABBITMQ_USER: guest
+      RABBITMQ_PASSWORD: guest
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_DB: 0
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - pret_network
+    restart: unless-stopped
+
+  # Service Évaluation Bien - API
+  service-evaluation-bien:
+    build:
+      context: .
+      dockerfile: services/evaluation_bien/Dockerfile
+    container_name: service_evaluation_bien
+    ports:
+      - "8003:8003"
+    environment:
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      RABBITMQ_USER: guest
+      RABBITMQ_PASSWORD: guest
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_DB: 1
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - pret_network
+    restart: unless-stopped
+
+  # Service Évaluation Bien - Celery Worker
+  worker-evaluation-bien:
+    build:
+      context: .
+      dockerfile: services/evaluation_bien/Dockerfile
+    container_name: worker_evaluation_bien
+    command: celery -A celery_app worker --loglevel=info --concurrency=2 -Q property_evaluation_queue
+    environment:
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      RABBITMQ_USER: guest
+      RABBITMQ_PASSWORD: guest
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_DB: 1
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - pret_network
+    restart: unless-stopped
+
+  # Service Décision
+  service-decision:
+    build:
+      context: .
+      dockerfile: services/decision/Dockerfile
+    container_name: service_decision
+    ports:
+      - "8004:8004"
+    environment:
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      RABBITMQ_USER: guest
+      RABBITMQ_PASSWORD: guest
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - pret_network
+    restart: unless-stopped
+  # Service Notification
+  service-notification:
+    build:
+      context: .
+      dockerfile: services/notification/Dockerfile
+    container_name: service_notification
+    ports:
+      - "8005:8005"
+    environment:
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      RABBITMQ_USER: guest
+      RABBITMQ_PASSWORD: guest
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - pret_network
+    restart: unless-stopped
+
+  # Flower - Celery Monitoring
+  flower:
+    image: mher/flower:2.0
+    container_name: flower_monitoring
+    command: celery --broker=amqp://guest:guest@rabbitmq:5672// flower --port=5555
+    ports:
+      - "5555:5555"
+    environment:
+      CELERY_BROKER_URL: amqp://guest:guest@rabbitmq:5672//
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - pret_network
+    restart: unless-stopped
+
+networks:
+  pret_network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
+  rabbitmq_data:
