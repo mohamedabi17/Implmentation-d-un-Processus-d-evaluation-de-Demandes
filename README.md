@@ -1,703 +1,247 @@
-# Système Microservices d'Évaluation de Prêt Immobilier
+<div align="center">
 
-Architecture événementielle distribuée pour le traitement automatisé des demandes de prêt immobilier, implémentée avec FastAPI, RabbitMQ, Celery et PostgreSQL.
+# 🏦 Event-Driven Mortgage Approval Platform
 
-## Table des Matières
+**A distributed, fault-tolerant loan-evaluation system built on microservices, the Saga pattern and DMN decision rules.**
 
-- [Vue d'ensemble](#vue-densemble)
-- [Architecture](#architecture)
-- [Fonctionnalités](#fonctionnalités)
-- [Prérequis](#prérequis)
-- [Installation](#installation)
-- [Démarrage Rapide](#démarrage-rapide)
-- [Utilisation](#utilisation)
-- [Architecture Technique](#architecture-technique)
-- [API Documentation](#api-documentation)
-- [Monitoring](#monitoring)
-- [Technologies](#technologies)
-- [Structure du Projet](#structure-du-projet)
-- [Garanties Techniques](#garanties-techniques)
+[![Python](https://img.shields.io/badge/Python-3.11-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.104-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![RabbitMQ](https://img.shields.io/badge/RabbitMQ-3-FF6600?logo=rabbitmq&logoColor=white)](https://www.rabbitmq.com/)
+[![Celery](https://img.shields.io/badge/Celery-5.3-37814A?logo=celery&logoColor=white)](https://docs.celeryq.dev/)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15-4169E1?logo=postgresql&logoColor=white)](https://www.postgresql.org/)
+[![Redis](https://img.shields.io/badge/Redis-7-DC382D?logo=redis&logoColor=white)](https://redis.io/)
+[![Docker](https://img.shields.io/badge/Docker%20Compose-ready-2496ED?logo=docker&logoColor=white)](https://docs.docker.com/compose/)
 
-## Vue d'ensemble
+*Master's project — Business Process Management (TD3)*
 
-Ce projet implémente un système complet de traitement de demandes de prêt immobilier basé sur une architecture microservices événementielle. Le système garantit la cohérence transactionnelle distribuée grâce au Saga Pattern avec compensation métier automatique.
+</div>
 
-### Caractéristiques Principales
+---
 
-- **Architecture Microservices** : 5 services indépendants avec bases de données isolées
-- **Communication Asynchrone** : Événements RabbitMQ avec garantie de livraison
-- **Traitement Parallèle** : Workers Celery distribués avec scalabilité horizontale
-- **Cohérence Forte** : Idempotence atomique et transactions uniques
-- **Saga Pattern** : Compensation métier chorégraphiée (conforme TD3)
-- **Tolérance aux Pannes** : Retry automatique, Dead Letter Queues, redelivery
-- **Temps Réel** : Notifications WebSocket pour suivi instantané
+## 📌 Table of contents
 
-## Architecture
+- [Overview](#-overview)
+- [Architecture](#-architecture)
+- [Business process](#-business-process)
+- [Saga & compensation](#-saga--compensation)
+- [DMN decision table](#-dmn-decision-table)
+- [Services & API](#-services--api)
+- [Quick start](#-quick-start)
+- [Project structure](#-project-structure)
 
-### Schéma Global
+---
 
-```
-┌─────────────┐     ┌──────────────┐     ┌─────────────┐
-│   Client    │────▶│   Service    │────▶│  RabbitMQ   │
-│             │     │  Demandes    │     │   Broker    │
-└─────────────┘     └──────────────┘     └─────────────┘
-                           │                     │
-                           ▼                     ▼
-                    ┌──────────────┐     ┌─────────────┐
-                    │  PostgreSQL  │     │   Service   │
-                    │   Database   │     │   Crédit    │
-                    └──────────────┘     └─────────────┘
-                                                │
-                                                ▼
-                                         ┌─────────────┐
-                                         │   Service   │
-                                         │    Bien     │
-                                         └─────────────┘
-                                                │
-                                                ▼
-                                         ┌─────────────┐
-                                         │   Service   │
-                                         │  Décision   │
-                                         └─────────────┘
-                                                │
-                                                ▼
-                                         ┌─────────────┐
-                                         │   Service   │
-                                         │Notification │
-                                         └─────────────┘
-```
+## 🎯 Overview
 
-### Microservices
+A customer submits a mortgage application; five independent services cooperate through **event choreography** on RabbitMQ — no central orchestrator — to assess the applicant's credit, appraise the property, apply a **DMN decision table**, and notify the customer **in real time** over WebSocket/SSE.
 
-1. **Service Demandes** (Port 8000)
-   - Gestion du cycle de vie des demandes
-   - Agrégation des résultats
-   - API REST principale
+Distributed consistency is guaranteed by a **choreographed Saga** with business compensation: if any step fails, previously completed steps are undone automatically.
 
-2. **Service Crédit** (Port 8001)
-   - Évaluation de la solvabilité
-   - Calcul du score de crédit
-   - Worker Celery asynchrone
+| | Guarantee | How |
+|---|---|---|
+| 🔀 | **Loose coupling** | Each service owns its data; communication only through domain events |
+| ⚡ | **Async workers** | CPU/IO-heavy evaluations offloaded to horizontally scalable Celery workers |
+| ♻️ | **Consistency** | Saga pattern (in-memory + persistent orchestrator) with compensations |
+| 🛡️ | **Fault tolerance** | Manual ACK, retries, dead-letter queues, idempotent handlers |
+| 📡 | **Real-time** | WebSocket & Server-Sent Events per application |
+| 🔭 | **Observability** | RabbitMQ management UI, Flower dashboard, health endpoints |
 
-3. **Service Évaluation Bien** (Port 8002)
-   - Estimation de la valeur immobilière
-   - Calcul du ratio LTV (Loan-to-Value)
-   - Worker Celery asynchrone
+---
 
-4. **Service Décision** (Port 8003)
-   - Application des règles métier DMN
-   - Calcul du taux d'intérêt
-   - Décision finale automatisée
+## 🏗️ Architecture
 
-5. **Service Notification** (Port 8004)
-   - Notifications temps réel WebSocket
-   - Envoi d'emails (simulation)
-   - Server-Sent Events (SSE)
+```mermaid
+flowchart TB
+    C(["👤 Client"]) -->|REST| D["📝 Demandes service<br/>:8000"]
+    C <-->|WebSocket / SSE| N["🔔 Notification service<br/>:8004"]
 
-## Fonctionnalités
+    D --> PG[("🐘 PostgreSQL")]
+    D <-->|events| MQ{{"🐇 RabbitMQ<br/>topic exchange"}}
 
-### Traitement de Demande Complet
+    MQ <--> CR["💳 Credit service<br/>:8001"]
+    MQ <--> BI["🏠 Property service<br/>:8002"]
+    MQ <--> DE["⚖️ Decision service<br/>:8003<br/>DMN engine"]
+    MQ --> N
 
-1. **Création de demande** via API REST
-2. **Évaluation crédit** asynchrone (3-8 secondes)
-3. **Évaluation bien** asynchrone (5-10 secondes)
-4. **Décision automatisée** selon règles DMN
-5. **Notification client** en temps réel
+    CR -.->|tasks| WC["⚙️ Celery worker<br/>credit"]
+    BI -.->|tasks| WB["⚙️ Celery worker<br/>property"]
+    WC <--> RD[("🧠 Redis<br/>result backend")]
+    WB <--> RD
 
-### Saga Pattern avec Compensation
+    FL["🌸 Flower :5555"] -.-> RD
 
-Le système implémente une compensation métier distribuée :
-
-```
-Succès :
-POST /demandes → Crédit OK → Bien OK → Décision OK → APPROVED
-
-Échec avec compensation :
-POST /demandes → Crédit OK → Bien OK → Décision FAIL
-  → compensation.triggered
-  → credit.cancelled
-  → bien.cancelled
-  → demande.status = REJECTED
+    style MQ fill:#FF6600,color:#fff
+    style DE fill:#6B4FBB,color:#fff
 ```
 
-### Garanties Transactionnelles
+---
 
-- **Idempotence** : `INSERT ON CONFLICT` atomique sur `correlation_id`
-- **Exactly-once** : Transaction unique incluant marquage + update métier
-- **Pas de fenêtre de crash** : COMMIT avant ACK message
-- **Isolation** : Base de données par service (Database per Service pattern)
+## 🔄 Business process
 
-## Prérequis
+```mermaid
+sequenceDiagram
+    autonumber
+    actor U as Customer
+    participant D as Demandes
+    participant MQ as RabbitMQ
+    participant C as Credit (+worker)
+    participant B as Property (+worker)
+    participant X as Decision (DMN)
+    participant N as Notification
 
-- **Docker** 20.10+ et Docker Compose 2.0+
-- **Python** 3.11+ (pour développement local)
-- **Git** (pour cloner le dépôt)
-- **4 GB RAM minimum** (8 GB recommandé)
-- **Ports disponibles** : 5432, 5555, 5672, 6379, 8000-8004, 15672
+    U->>D: POST /demandes
+    D->>MQ: demande.created
+    MQ->>C: demande.created
+    C->>C: Celery task: credit score (300-850), DTI
+    C-->>MQ: credit.evaluated
+    MQ->>B: credit.evaluated
+    B->>B: Celery task: appraisal, LTV
+    B-->>MQ: bien.evaluated
+    MQ->>X: bien.evaluated
+    X->>X: DMN table + interest rate
+    X-->>MQ: decision.made (APPROUVE / ETUDE / REJETE)
+    MQ->>D: update status (each step)
+    MQ->>N: every domain event
+    N-->>U: real-time push (WebSocket / SSE)
+```
 
-## Installation
+### Application state machine
 
-### 1. Cloner le Dépôt
+```mermaid
+stateDiagram-v2
+    [*] --> EN_ATTENTE : POST /demandes
+    EN_ATTENTE --> VERIFICATION_CREDIT
+    VERIFICATION_CREDIT --> EVALUATION_BIEN : credit.evaluated
+    EVALUATION_BIEN --> EN_DECISION : bien.evaluated
+    EN_DECISION --> APPROUVE : decision.made
+    EN_DECISION --> REJETE : decision.made
+    VERIFICATION_CREDIT --> ECHEC : evaluation failed
+    EVALUATION_BIEN --> ECHEC : evaluation failed
+    ECHEC --> ANNULE : compensation.completed
+    APPROUVE --> [*]
+    REJETE --> [*]
+    ANNULE --> [*]
+```
+
+---
+
+## ♻️ Saga & compensation
+
+Each step registers an **execute** and a **compensate** action. On failure the orchestrator runs compensations in **reverse order**.
+
+```mermaid
+flowchart LR
+    S1["1 · Credit<br/>evaluation"] --> S2["2 · Property<br/>appraisal"] --> S3["3 · Decision"]
+    S3 -- ✔ --> OK(["✅ Completed"])
+    S3 -. ✖ failure .-> K3["↩ cancel decision"]
+    S2 -. ✖ failure .-> K2["↩ bien.cancelled"]
+    K3 -.-> K2 -.-> K1["↩ credit.cancelled"] -.-> KO(["🧯 compensation.completed"])
+```
+
+Event catalogue (`shared/events.py`):
+
+`demande.created` · `demande.updated` · `credit.evaluation.requested` · `credit.evaluated` · `credit.evaluation.failed` · `bien.evaluation.requested` · `bien.evaluated` · `bien.evaluation.failed` · `decision.requested` · `decision.made` · `compensation.triggered` · `compensation.completed` · `credit.cancelled` · `bien.cancelled` · `notification.sent`
+
+---
+
+## ⚖️ DMN decision table
+
+A weighted score (0–100) is computed from four criteria, then a decision table is applied:
+
+| Criterion | Max points | Best band |
+|---|:---:|---|
+| Credit score | 35 | ≥ 750 |
+| Income / amount ratio | 25 | ≥ 5× |
+| Debt-to-income (DTI) | 20 | ≤ 25 % |
+| Loan-to-value (LTV) | 20 | ≤ 70 % |
+
+```mermaid
+flowchart TD
+    A{"Credit ≥ 700<br/>DTI ≤ 40 %<br/>LTV ≤ 90 %"} -- yes --> A1{"score ≥ 75"}
+    A1 -- yes --> AP["✅ APPROUVE"]
+    A1 -- no --> ET["⚠️ ETUDE"]
+    A -- no --> B{"Credit ≥ 650<br/>DTI ≤ 35 %<br/>LTV ≤ 85 %"}
+    B -- yes --> B1{"score ≥ 70"}
+    B1 -- yes --> AP2["✅ APPROUVE<br/>with conditions"]
+    B1 -- no --> ET
+    B -- no --> Cc{"Credit ≥ 600<br/>DTI ≤ 30 %<br/>LTV ≤ 80 %"}
+    Cc -- yes --> C1{"score ≥ 60"}
+    C1 -- yes --> ET
+    C1 -- no --> RJ["❌ REJETE"]
+    Cc -- no --> RJ
+```
+
+The interest rate is then derived from the risk profile (credit score × LTV).
+
+---
+
+## 🔌 Services & API
+
+| Service | Port | Key endpoints |
+|---|:---:|---|
+| **Demandes** | 8000 | `POST /demandes` · `GET /demandes` · `GET /demandes/{id}` · `PUT /demandes/{id}/statut` · `DELETE /demandes/{id}` |
+| **Credit** | 8001 | `POST /credit/evaluer` · `GET /credit/task/{task_id}` |
+| **Property** | 8002 | `POST /bien/evaluer` · `GET /bien/task/{task_id}` |
+| **Decision** | 8003 | `POST /decision/evaluer` · `GET /decision/regles` |
+| **Notification** | 8004 | `WS /ws/{demande_id}` · `GET /sse/{demande_id}` · `POST /notifications/send` |
+| RabbitMQ UI | 15672 | management console |
+| Flower | 5555 | Celery monitoring |
+
+Every service exposes `GET /health` and interactive docs at `/docs` (Swagger).
+
+---
+
+## 🚀 Quick start
 
 ```bash
-git clone https://github.com/mohamedabi17/Impl-mentation-d-un-Processus-d-valuation-de-Demandes-de-Pr-t-.git
-cd Impl-mentation-d-un-Processus-d-valuation-de-Demandes-de-Pr-t-
+git clone https://github.com/mohamedabi17/Implmentation-d-un-Processus-d-evaluation-de-Demandes.git
+cd Implmentation-d-un-Processus-d-evaluation-de-Demandes
+
+./start.sh            # docker compose up --build -d  (RabbitMQ, Redis, Postgres, 5 services, 2 workers, Flower)
 ```
 
-### 2. Configuration (Optionnelle)
-
-Le fichier `.env` est déjà fourni avec des valeurs par défaut :
-
-```env
-POSTGRES_USER=postgres
-POSTGRES_PASSWORD=postgres
-RABBITMQ_USER=guest
-RABBITMQ_PASSWORD=guest
-```
-
-## Démarrage Rapide
-
-### Lancer tous les services
-
-```bash
-# Démarrage complet (télécharge les images Docker la première fois)
-docker compose up -d --build
-
-# Vérifier que tous les services sont démarrés
-docker compose ps
-```
-
-**Sortie attendue :**
-```
-NAME                        STATUS              PORTS
-pret_postgres              running             0.0.0.0:5432->5432/tcp
-pret_rabbitmq              running             0.0.0.0:5672->5672/tcp, 0.0.0.0:15672->15672/tcp
-pret_redis                 running             0.0.0.0:6379->6379/tcp
-service_demandes           running             0.0.0.0:8000->8000/tcp
-service_credit             running             0.0.0.0:8001->8001/tcp
-service_evaluation_bien    running             0.0.0.0:8002->8002/tcp
-service_decision           running             0.0.0.0:8003->8003/tcp
-service_notification       running             0.0.0.0:8004->8004/tcp
-worker_credit              running
-worker_evaluation_bien     running
-flower_monitoring          running             0.0.0.0:5555->5555/tcp
-```
-
-### Créer une Demande de Test
+Submit an application:
 
 ```bash
 curl -X POST http://localhost:8000/demandes \
   -H "Content-Type: application/json" \
-  -d '{
-    "nom_client": "Dupont",
-    "prenom_client": "Jean",
-    "email_client": "jean.dupont@example.com",
-    "montant_demande": 250000,
-    "duree_pret_mois": 240,
-    "revenu_annuel": 50000,
-    "adresse_bien": "15 Rue de la République, 75001 Paris",
-    "type_bien": "appartement",
-    "valeur_estimee_bien": 300000
-  }'
+  -d '{"client_id":"C-001","montant_demande":200000,"revenu_annuel":65000,"duree_pret_mois":240,"adresse_bien":"12 rue de la Paix, Paris"}'
 ```
 
-**Réponse :**
-```json
-{
-  "demande_id": "DEM-20260304-ABC123",
-  "statut": "PENDING",
-  "message": "Demande créée avec succès. Évaluation en cours..."
-}
-```
-
-### Consulter le Statut
+Follow it live:
 
 ```bash
-curl http://localhost:8000/demandes/DEM-20260304-ABC123
+websocat ws://localhost:8004/ws/<demande_id>
 ```
 
-### Arrêter les Services
+Stop everything with `./stop.sh`.
 
-```bash
-# Arrêt propre
-docker compose down
+---
 
-# Arrêt + suppression des volumes (reset complet)
-docker compose down -v
-```
-
-## Utilisation
-
-### API REST Endpoints
-
-#### Service Demandes (8000)
-
-```bash
-# Créer une demande
-POST /demandes
-
-# Consulter une demande
-GET /demandes/{demande_id}
-
-# Lister toutes les demandes
-GET /demandes
-
-# Health check
-GET /health
-```
-
-#### Service Crédit (8001)
-
-```bash
-# Lancer évaluation crédit
-POST /credit/evaluate/{demande_id}
-
-# Consulter résultat
-GET /credit/{demande_id}
-```
-
-#### Service Évaluation Bien (8002)
-
-```bash
-# Lancer évaluation bien
-POST /bien/evaluate/{demande_id}
-
-# Consulter résultat
-GET /bien/{demande_id}
-```
-
-#### Service Décision (8003)
-
-```bash
-# Déclencher décision
-POST /decision/process/{demande_id}
-
-# Consulter décision
-GET /decision/{demande_id}
-```
-
-#### Service Notification (8004)
-
-```bash
-# WebSocket temps réel
-WS /ws/{demande_id}
-
-# Server-Sent Events
-GET /events/{demande_id}
-```
-
-### Notifications Temps Réel
-
-#### WebSocket
-
-```javascript
-const ws = new WebSocket('ws://localhost:8004/ws/DEM-20260304-ABC123');
-
-ws.onmessage = (event) => {
-  const data = JSON.parse(event.data);
-  console.log('Statut:', data.status);
-  // Output: PENDING → CREDIT_EVALUATED → BIEN_EVALUATED → APPROVED
-};
-```
-
-#### Avec `wscat` (CLI)
-
-```bash
-npm install -g wscat
-wscat -c ws://localhost:8004/ws/DEM-20260304-ABC123
-```
-
-## Architecture Technique
-
-### Communication Événementielle
-
-#### Événements Principaux
-
-| Événement | Émetteur | Consommateur | Description |
-|-----------|----------|--------------|-------------|
-| `credit.evaluated` | Service Crédit | Service Demandes | Résultat évaluation crédit |
-| `bien.evaluated` | Service Bien | Service Demandes | Résultat évaluation bien |
-| `decision.made` | Service Décision | Service Demandes + Notification | Décision finale |
-| `notification.sent` | Service Notification | Service Demandes | Confirmation envoi |
-
-#### Événements de Compensation (Saga Pattern)
-
-| Événement | Émetteur | Consommateur | Action |
-|-----------|----------|--------------|--------|
-| `compensation.triggered` | Service en échec | Tous les services | Déclenche rollback |
-| `credit.cancelled` | Service Crédit | Service Demandes | Annule évaluation crédit |
-| `bien.cancelled` | Service Bien | Service Demandes | Annule évaluation bien |
-
-### Configuration RabbitMQ
-
-- **Exchange Type** : TOPIC (routage flexible)
-- **Durabilité** : Exchanges et queues durables
-- **Persistance** : Messages persistés sur disque
-- **TTL Messages** : 24 heures
-- **Dead Letter Queue** : Configurée pour tous les types d'événements
-- **Acknowledgment** : Mode `acks_late` pour garantir la fiabilité
-
-### Configuration Celery
-
-#### Retry Strategy
-
-```python
-max_retries = 5
-retry_backoff = True (exponentiel)
-retry_backoff_max = 600 secondes
-retry_jitter = True (évite synchronisation)
-```
-
-**Séquence de retry :**
-```
-Tentative 1: Immédiate
-Tentative 2: +60s
-Tentative 3: +120s
-Tentative 4: +240s
-Tentative 5: +480s
-Tentative 6: +600s (max)
-→ Dead Letter Queue si échec final
-```
-
-#### Scalabilité Horizontale
-
-```bash
-# Scaler les workers crédit
-docker compose up -d --scale worker_credit=4
-
-# Scaler les workers bien
-docker compose up -d --scale worker_evaluation_bien=8
-```
-
-## API Documentation
-
-### Swagger UI (Interface Interactive)
-
-Accédez aux documentations Swagger de chaque service :
-
-- **Demandes** : http://localhost:8000/docs
-- **Crédit** : http://localhost:8001/docs
-- **Bien** : http://localhost:8002/docs
-- **Décision** : http://localhost:8003/docs
-- **Notification** : http://localhost:8004/docs
-
-### Exemple de Schéma de Demande
-
-```json
-{
-  "nom_client": "string",
-  "prenom_client": "string",
-  "email_client": "user@example.com",
-  "montant_demande": 250000,
-  "duree_pret_mois": 240,
-  "revenu_annuel": 50000,
-  "adresse_bien": "string",
-  "type_bien": "appartement | maison | terrain",
-  "valeur_estimee_bien": 300000
-}
-```
-
-## Monitoring
-
-### RabbitMQ Management UI
-
-Interface de gestion RabbitMQ :
-
-- **URL** : http://localhost:15672
-- **Identifiants** : `guest` / `guest`
-- **Fonctionnalités** :
-  - Visualisation des queues et exchanges
-  - Métriques de messages (rates, totaux)
-  - Monitoring des consommateurs
-  - Dead Letter Queues
-
-### Flower (Monitoring Celery)
-
-Dashboard pour les tâches Celery :
-
-- **URL** : http://localhost:5555
-- **Fonctionnalités** :
-  - État des workers en temps réel
-  - Historique des tâches (succès/échec)
-  - Temps d'exécution par tâche
-  - Monitoring de la charge
-
-### Logs Docker
-
-```bash
-# Tous les services
-docker compose logs -f
-
-# Un service spécifique
-docker compose logs -f service_demandes
-
-# Avec filtre timestamp
-docker compose logs -f --since 10m
-
-# Worker crédit
-docker compose logs -f worker_credit
-```
-
-## Technologies
-
-### Backend
-
-- **FastAPI** 0.109+ : Framework web asynchrone haute performance
-- **SQLAlchemy** 2.0+ : ORM avec support async
-- **Pydantic** 2.0+ : Validation de données
-- **asyncpg** : Driver PostgreSQL asynchrone
-
-### Messagerie & Workers
-
-- **RabbitMQ** 3.13 : Message broker AMQP
-- **Celery** 5.3+ : Distributed task queue
-- **Redis** 7.2 : Backend de résultats Celery
-- **aio-pika** : Client RabbitMQ asynchrone
-
-### Base de Données
-
-- **PostgreSQL** 15 : Base de données relationnelle
-- **Alembic** : Migrations de schéma (optionnel)
-
-### Infrastructure
-
-- **Docker** 24+ : Conteneurisation
-- **Docker Compose** 2.0+ : Orchestration multi-conteneurs
-- **Uvicorn** : Serveur ASGI
-
-## Structure du Projet
+## 📁 Project structure
 
 ```
 .
 ├── services/
-│   ├── demandes/
-│   │   ├── main.py              # API REST FastAPI
-│   │   ├── database.py          # Configuration SQLAlchemy
-│   │   ├── db_models.py         # Modèles de données
-│   │   ├── repository.py        # Accès données
-│   │   ├── event_consumer.py    # Consommateur RabbitMQ
-│   │   ├── Dockerfile
-│   │   └── requirements.txt
-│   ├── credit/
-│   │   ├── main.py              # API REST
-│   │   ├── tasks.py             # Tâches Celery
-│   │   ├── celery_app.py        # Configuration Celery
-│   │   ├── Dockerfile
-│   │   └── requirements.txt
-│   ├── evaluation_bien/
-│   │   ├── main.py
-│   │   ├── tasks.py
-│   │   ├── celery_app.py
-│   │   ├── Dockerfile
-│   │   └── requirements.txt
-│   ├── decision/
-│   │   ├── main.py
-│   │   ├── dmn_rules.py         # Règles métier DMN
-│   │   ├── Dockerfile
-│   │   └── requirements.txt
-│   └── notification/
-│       ├── main.py
-│       ├── Dockerfile
-│       └── requirements.txt
+│   ├── demandes/          # API gateway of the process, PostgreSQL repository, event consumer
+│   ├── credit/            # FastAPI + Celery tasks (credit scoring)
+│   ├── evaluation_bien/   # FastAPI + Celery tasks (property appraisal, LTV)
+│   ├── decision/          # DMN rules engine, interest-rate computation
+│   └── notification/      # WebSocket / SSE / e-mail simulation
 ├── shared/
-│   ├── events.py                # Gestion événements
-│   ├── models.py                # Modèles partagés
-│   ├── rabbitmq.py              # Connexion RabbitMQ
-│   ├── saga.py                  # Saga Pattern en mémoire
-│   ├── saga_persistent.py       # Saga Pattern persistant
-│   └── requirements.txt
-├── captures/                    # Screenshots documentation
-├── docker-compose.yml           # Orchestration services
-├── .env                         # Configuration environnement
-├── .gitignore
-├── requirements.txt             # Dépendances principales
-├── start.sh                     # Script démarrage
-├── stop.sh                      # Script arrêt
-├── DEMARRAGE.md                 # Guide démarrage
-├── rapport.tex                  # Rapport LaTeX académique
-└── README.md                    # Ce fichier
+│   ├── events.py          # Typed domain events (Pydantic)
+│   ├── rabbitmq.py        # Async publisher / consumer (aio-pika)
+│   ├── saga.py            # Saga orchestrator + compensation
+│   └── saga_persistent.py # Saga state persisted for crash recovery
+├── docker-compose.yml
+├── start.sh / stop.sh
+└── rapport.tex            # Full technical report
 ```
-
-## Garanties Techniques
-
-### Idempotence Atomique
-
-Tous les handlers d'événements garantissent un traitement exactly-once :
-
-```sql
-INSERT INTO processed_messages (correlation_id, ...)
-VALUES (...)
-ON CONFLICT (correlation_id) DO NOTHING
-RETURNING correlation_id;
-```
-
-- Si `correlation_id` existe déjà → Message ignoré
-- Si `correlation_id` nouveau → Message traité
-- **Atomicité garantie** par contrainte PRIMARY KEY PostgreSQL
-
-### Transaction Unique
-
-Toutes les opérations d'un handler sont dans une transaction :
-
-```python
-async with session.begin():  # BEGIN
-    should_process = await try_mark_as_processed(...)
-    if not should_process:
-        return  # ROLLBACK automatique
-    
-    await update_data(...)
-    # COMMIT automatique à la sortie
-```
-
-**Garanties :**
-- Pas de fenêtre de crash entre update et marquage idempotence
-- COMMIT avant ACK message RabbitMQ
-- ROLLBACK automatique en cas d'exception
-
-### Saga Pattern - Compensation Métier
-
-Implémentation chorégraphiée sans orchestrateur central :
-
-**Scénario : Échec Service Décision**
-
-```
-1. POST /demandes → CREATED
-2. Service Crédit → credit.evaluated ✓
-3. Service Bien → bien.evaluated ✓
-4. Service Décision → CRASH ✗
-   → Publish: compensation.triggered
-   
-5. Service Bien reçoit compensation.triggered
-   → Publish: bien.cancelled
-   
-6. Service Crédit reçoit compensation.triggered
-   → Publish: credit.cancelled
-   
-7. Service Demandes reçoit compensation.triggered
-   → UPDATE demandes SET statut = 'REJECTED'
-   → Raison: "Compensation - prise_decision échouée"
-
-RÉSULTAT: Rollback distribué complet
-```
-
-### Tolérance aux Pannes
-
-| Scénario | Mécanisme | Résultat |
-|----------|-----------|----------|
-| Worker crash avant COMMIT | ROLLBACK auto + Redelivery RabbitMQ | Message retraité |
-| Worker crash après COMMIT | ACK non envoyé → Redelivery | Idempotence détecte duplicate |
-| Double delivery RabbitMQ | INSERT ON CONFLICT | Deuxième traitement ignoré |
-| Network partition | Transaction timeout → ROLLBACK | Message retraité |
-| Database unavailable | Retry Celery (5x) → DLQ | Alertes monitoring |
-
-## Performances
-
-### Métriques Typiques
-
-| Métrique | Valeur |
-|----------|--------|
-| Latence création demande | < 100ms |
-| Temps évaluation crédit | 3-8 secondes |
-| Temps évaluation bien | 5-10 secondes |
-| Temps décision | < 500ms |
-| Latence notification | < 200ms |
-| **Durée totale E2E** | **10-20 secondes** |
-
-### Scalabilité
-
-- **Horizontal** : Workers Celery (1 à 50+)
-- **Vertical** : Ressources PostgreSQL, RabbitMQ
-- **Capacité testée** : 100 demandes/seconde
-- **Dimensionnement recommandé** :
-  - 1 worker pour 100 demandes/jour
-  - 4 workers pour 1000 demandes/jour
-  - 10+ workers pour charge élevée
-
-## Troubleshooting
-
-### Services ne démarrent pas
-
-```bash
-# Vérifier les logs
-docker compose logs
-
-# Vérifier les ports
-netstat -tuln | grep -E '5432|5672|6379|800[0-4]|15672|5555'
-
-# Redémarrer proprement
-docker compose down -v
-docker compose up -d --build
-```
-
-### Messages bloqués dans RabbitMQ
-
-```bash
-# Vérifier les queues via Management UI
-http://localhost:15672
-
-# Purger une queue (ATTENTION: perte de données)
-docker compose exec rabbitmq rabbitmqadmin purge queue name=credit_evaluation_queue
-```
-
-### Base de données corrompue
-
-```bash
-# Reset complet (ATTENTION: perte de données)
-docker compose down -v
-docker volume rm projet_bpm_td3_postgres_data
-docker compose up -d
-```
-
-### Workers Celery inactifs
-
-```bash
-# Vérifier les workers via Flower
-http://localhost:5555
-
-# Redémarrer un worker
-docker compose restart worker_credit
-```
-
-## Développement
-
-### Environnement Local
-
-```bash
-# Créer environnement virtuel
-python -m venv venv
-source venv/bin/activate  # Linux/Mac
-# ou
-venv\Scripts\activate  # Windows
-
-# Installer dépendances
-pip install -r requirements.txt
-
-# Variables d'environnement
-export DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/demandes
-export RABBITMQ_URL=amqp://guest:guest@localhost:5672/
-export REDIS_URL=redis://localhost:6379/0
-```
-
-### Lancer un Service Individuellement
-
-```bash
-cd services/demandes
-uvicorn main:app --reload --port 8000
-```
-
-## Auteurs
-
-- **ABI Mohamed** - Développement et architecture
-- **BOUAGADA Youcef** - Développement et tests
-
-## Licence
-
-Ce projet est développé dans le cadre du Master 2 DataScale - Université Paris-Saclay.
 
 ---
 
-**Projet académique** - Master 2 Microservices et Architectures Distribuées  
-**Année académique** : 2025-2026  
-**Institution** : Université Paris-Saclay
+<div align="center">
 
-Pour plus de détails, consultez le [rapport technique LaTeX](rapport.tex) ou le [guide de démarrage](DEMARRAGE.md).
+**Mohamed Abi** · [GitHub @mohamedabi17](https://github.com/mohamedabi17)
+
+</div>
